@@ -6,13 +6,11 @@ use arrow_array::{
 use futures::StreamExt;
 use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
 use redis::aio::MultiplexedConnection;
-use serde::Serialize;
-use serde_json::json;
 use std::path::{Path, PathBuf};
 use tokio::fs::File;
 use walkdir::WalkDir;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 struct CreatureRow {
     id: String,
     name: Option<String>,
@@ -24,15 +22,7 @@ struct CreatureRow {
     skv_personnr_ref: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct ServiceRow {
-    id: String,
-    creature_id: String,
-    label: String,
-    props: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 struct FormanRow {
     personnummer: String,
     forman_id: String,
@@ -85,22 +75,6 @@ fn get_f64_col<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Float64Arra
         .as_any()
         .downcast_ref::<Float64Array>()
         .ok_or_else(|| anyhow!("column {name} is not Float64Array"))
-}
-
-fn get_i32_col<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Int32Array> {
-    let idx = batch.schema().index_of(name)?;
-    batch.column(idx)
-        .as_any()
-        .downcast_ref::<Int32Array>()
-        .ok_or_else(|| anyhow!("column {name} is not Int32Array"))
-}
-
-fn get_bool_col<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a BooleanArray> {
-    let idx = batch.schema().index_of(name)?;
-    batch.column(idx)
-        .as_any()
-        .downcast_ref::<BooleanArray>()
-        .ok_or_else(|| anyhow!("column {name} is not BooleanArray"))
 }
 
 fn get_date32_col<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Date32Array> {
@@ -203,7 +177,9 @@ fn normalize_binary_id(bytes: &[u8]) -> String {
     }
 }
 
-async fn open_batch_stream(path: &Path) -> Result<parquet::arrow::async_reader::ParquetRecordBatchStream<File>> {
+async fn open_batch_stream(
+    path: &Path,
+) -> Result<parquet::arrow::async_reader::ParquetRecordBatchStream<File>> {
     let file = File::open(path)
         .await
         .with_context(|| format!("open {}", path.display()))?;
@@ -213,28 +189,332 @@ async fn open_batch_stream(path: &Path) -> Result<parquet::arrow::async_reader::
     Ok(builder.build()?)
 }
 
-async fn graph_query(
+async fn graph_query_raw(
     conn: &mut MultiplexedConnection,
     graph_name: &str,
     query: &str,
-    params: &serde_json::Value,
 ) -> Result<()> {
-    let params_json = serde_json::to_string(params)?;
     let _: redis::Value = redis::cmd("GRAPH.QUERY")
         .arg(graph_name)
         .arg(query)
-        .arg("--params")
-        .arg(params_json)
         .query_async(conn)
         .await
-        .with_context(|| format!("GRAPH.QUERY failed: {query}"))?;
+        .with_context(|| format!("GRAPH.QUERY failed"))?;
     Ok(())
+}
+
+fn cypher_string(s: &str) -> String {
+    let escaped = s
+        .replace('\\', "\\\\")
+        .replace('\'', "\\'")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+    format!("'{}'", escaped)
+}
+
+fn cypher_opt_string(v: &Option<String>) -> String {
+    match v {
+        Some(s) => cypher_string(s),
+        None => "null".to_string(),
+    }
+}
+
+fn cypher_opt_i32(v: Option<i32>) -> String {
+    match v {
+        Some(x) => x.to_string(),
+        None => "null".to_string(),
+    }
+}
+
+fn cypher_opt_f64(v: Option<f64>) -> String {
+    match v {
+        Some(x) if x.is_finite() => x.to_string(),
+        _ => "null".to_string(),
+    }
+}
+
+fn cypher_opt_bool(v: Option<bool>) -> String {
+    match v {
+        Some(true) => "true".to_string(),
+        Some(false) => "false".to_string(),
+        None => "null".to_string(),
+    }
+}
+
+fn classify_label(stem: &str) -> Option<&'static str> {
+    match stem {
+        "personlig_assistans" => Some("PersonligAssistans"),
+        "barn_unga" => Some("BarnUnga"),
+        "boende_daglig_verksamhet" => Some("BoendeDagligVerksamhet"),
+        "ekonomiskt_bistand" => Some("EkonomisktBistand"),
+        "forsorjningsstod" => Some("Forsorjningsstod"),
+        "hemtjanst" => Some("Hemtjanst"),
+        "formaner" => Some("Forman"),
+        "creatures" => None,
+        _ => None,
+    }
+}
+
+fn build_creature_query(rows: &[CreatureRow]) -> String {
+    let list = rows
+        .iter()
+        .map(|r| {
+            format!(
+                "{{id:{},name:{},distrikt:{},kommun_id:{},fk_person_id:{},af_arende_id:{},region_patient_id:{},skv_personnr_ref:{}}}",
+                cypher_string(&r.id),
+                cypher_opt_string(&r.name),
+                cypher_opt_string(&r.distrikt),
+                cypher_opt_string(&r.kommun_id),
+                cypher_opt_string(&r.fk_person_id),
+                cypher_opt_string(&r.af_arende_id),
+                cypher_opt_string(&r.region_patient_id),
+                cypher_opt_string(&r.skv_personnr_ref),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+
+    format!(
+        "UNWIND [{}] AS row
+         MERGE (c:Creature {{id: row.id}})
+         SET c.name = row.name,
+             c.distrikt = row.distrikt,
+             c.kommun_id = row.kommun_id,
+             c.fk_person_id = row.fk_person_id,
+             c.af_arende_id = row.af_arende_id,
+             c.region_patient_id = row.region_patient_id,
+             c.skv_personnr_ref = row.skv_personnr_ref",
+        list
+    )
+}
+
+fn build_formaner_query(rows: &[FormanRow]) -> String {
+    let list = rows
+        .iter()
+        .map(|r| {
+            format!(
+                "{{personnummer:{},forman_id:{},startdatum:{},slutdatum:{},totalbelopp:{}}}",
+                cypher_string(&r.personnummer),
+                cypher_string(&r.forman_id),
+                r.startdatum,
+                cypher_opt_i32(r.slutdatum),
+                r.totalbelopp
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+
+    format!(
+        "UNWIND [{}] AS row
+         MATCH (c:Creature {{skv_personnr_ref: row.personnummer}})
+         MERGE (f:Forman {{id: row.forman_id}})
+         SET f.personnummer = row.personnummer,
+             f.startdatum = row.startdatum,
+             f.slutdatum = row.slutdatum,
+             f.totalbelopp = row.totalbelopp
+         MERGE (f)-[:FOR_CREATURE]->(c)",
+        list
+    )
+}
+
+fn build_personlig_assistans_row(batch: &RecordBatch, row: usize) -> Result<String> {
+    Ok(format!(
+        "{{id:{},creature_id:{},utforare_id:{},handlaggare_id:{},lagrum:{},beviljade_timmar_vecka:{},utforda_timmar_vecka:{},finansiar:{},ivo_tillsynsnummer:{},beslutsdatum:{},giltigt_till:{},status:{}}}",
+        cypher_string(&opt_string(batch, "id", row)?.unwrap()),
+        cypher_string(&opt_string(batch, "creature_id", row)?.unwrap()),
+        cypher_opt_string(&opt_string(batch, "utforare_id", row)?),
+        cypher_opt_string(&opt_string(batch, "handlaggare_id", row)?),
+        cypher_opt_string(&opt_string(batch, "lagrum", row)?),
+        cypher_opt_f64(opt_f64(batch, "beviljade_timmar_vecka", row)?),
+        cypher_opt_f64(opt_f64(batch, "utforda_timmar_vecka", row)?),
+        cypher_opt_string(&opt_string(batch, "finansiar", row)?),
+        cypher_opt_string(&opt_string(batch, "ivo_tillsynsnummer", row)?),
+        cypher_opt_i32(opt_date32(batch, "beslutsdatum", row)?),
+        cypher_opt_i32(opt_date32(batch, "giltigt_till", row)?),
+        cypher_opt_string(&opt_string(batch, "status", row)?),
+    ))
+}
+
+fn build_barn_unga_row(batch: &RecordBatch, row: usize) -> Result<String> {
+    Ok(format!(
+        "{{id:{},creature_id:{},utforare_id:{},handlaggare_id:{},insatstyp:{},lagrum:{},placeringskommun:{},kostnad_per_dygn:{},startdatum:{},slutdatum:{}}}",
+        cypher_string(&opt_string(batch, "id", row)?.unwrap()),
+        cypher_string(&opt_string(batch, "creature_id", row)?.unwrap()),
+        cypher_opt_string(&opt_string(batch, "utforare_id", row)?),
+        cypher_opt_string(&opt_string(batch, "handlaggare_id", row)?),
+        cypher_opt_string(&opt_string(batch, "insatstyp", row)?),
+        cypher_opt_string(&opt_string(batch, "lagrum", row)?),
+        cypher_opt_string(&opt_string(batch, "placeringskommun", row)?),
+        cypher_opt_f64(opt_f64(batch, "kostnad_per_dygn", row)?),
+        cypher_opt_i32(opt_date32(batch, "startdatum", row)?),
+        cypher_opt_i32(opt_date32(batch, "slutdatum", row)?),
+    ))
+}
+
+fn build_boende_daglig_verksamhet_row(batch: &RecordBatch, row: usize) -> Result<String> {
+    Ok(format!(
+        "{{id:{},creature_id:{},utforare_id:{},handlaggare_id:{},typ:{},lagrum:{},besok_per_manad:{},beslutsdatum:{},giltighetsdatum:{}}}",
+        cypher_string(&opt_string(batch, "id", row)?.unwrap()),
+        cypher_string(&opt_string(batch, "creature_id", row)?.unwrap()),
+        cypher_opt_string(&opt_string(batch, "utforare_id", row)?),
+        cypher_opt_string(&opt_string(batch, "handlaggare_id", row)?),
+        cypher_opt_string(&opt_string(batch, "typ", row)?),
+        cypher_opt_string(&opt_string(batch, "lagrum", row)?),
+        cypher_opt_i32(opt_i32(batch, "besok_per_manad", row)?),
+        cypher_opt_i32(opt_date32(batch, "beslutsdatum", row)?),
+        cypher_opt_i32(opt_date32(batch, "giltighetsdatum", row)?),
+    ))
+}
+
+fn build_ekonomiskt_bistand_row(batch: &RecordBatch, row: usize) -> Result<String> {
+    Ok(format!(
+        "{{id:{},creature_id:{},handlaggare_id:{},andamal:{},belopp_kr:{},period:{},aterkrav:{},aterkravsbelopp:{},utbetalningsdatum:{}}}",
+        cypher_string(&opt_string(batch, "id", row)?.unwrap()),
+        cypher_string(&opt_string(batch, "creature_id", row)?.unwrap()),
+        cypher_opt_string(&opt_string(batch, "handlaggare_id", row)?),
+        cypher_opt_string(&opt_string(batch, "andamal", row)?),
+        cypher_opt_f64(opt_f64(batch, "belopp_kr", row)?),
+        cypher_opt_string(&opt_string(batch, "period", row)?),
+        cypher_opt_bool(opt_bool(batch, "aterkrav", row)?),
+        cypher_opt_f64(opt_f64(batch, "aterkravsbelopp", row)?),
+        cypher_opt_i32(opt_date32(batch, "utbetalningsdatum", row)?),
+    ))
+}
+
+fn build_forsorjningsstod_row(batch: &RecordBatch, row: usize) -> Result<String> {
+    Ok(format!(
+        "{{id:{},creature_id:{},handlaggare_id:{},belopp_kr:{},period:{},antal_manader:{},aktivitetskrav_uppfyllt:{},kopplad_aktivitet:{}}}",
+        cypher_string(&opt_string(batch, "id", row)?.unwrap()),
+        cypher_string(&opt_string(batch, "creature_id", row)?.unwrap()),
+        cypher_opt_string(&opt_string(batch, "handlaggare_id", row)?),
+        cypher_opt_f64(opt_f64(batch, "belopp_kr", row)?),
+        cypher_opt_string(&opt_string(batch, "period", row)?),
+        cypher_opt_i32(opt_i32(batch, "antal_manader", row)?),
+        cypher_opt_bool(opt_bool(batch, "aktivitetskrav_uppfyllt", row)?),
+        cypher_opt_string(&opt_string(batch, "kopplad_aktivitet", row)?),
+    ))
+}
+
+fn build_hemtjanst_row(batch: &RecordBatch, row: usize) -> Result<String> {
+    Ok(format!(
+        "{{id:{},creature_id:{},utforare_id:{},handlaggare_id:{},driftform:{},beviljade_timmar_manad:{},utforda_timmar_manad:{},insatstyper:{},kostnad_kr:{},beslutsdatum:{},giltigt_till:{}}}",
+        cypher_string(&opt_string(batch, "id", row)?.unwrap()),
+        cypher_string(&opt_string(batch, "creature_id", row)?.unwrap()),
+        cypher_opt_string(&opt_string(batch, "utforare_id", row)?),
+        cypher_opt_string(&opt_string(batch, "handlaggare_id", row)?),
+        cypher_opt_string(&opt_string(batch, "driftform", row)?),
+        cypher_opt_f64(opt_f64(batch, "beviljade_timmar_manad", row)?),
+        cypher_opt_f64(opt_f64(batch, "utforda_timmar_manad", row)?),
+        cypher_opt_string(&opt_string(batch, "insatstyper", row)?),
+        cypher_opt_f64(opt_f64(batch, "kostnad_kr", row)?),
+        cypher_opt_i32(opt_date32(batch, "beslutsdatum", row)?),
+        cypher_opt_i32(opt_date32(batch, "giltigt_till", row)?),
+    ))
+}
+
+fn build_service_query(label: &str, row_literals: &[String]) -> String {
+    let list = row_literals.join(",");
+
+    match label {
+        "PersonligAssistans" => format!(
+            "UNWIND [{}] AS row
+             MATCH (c:Creature {{id: row.creature_id}})
+             MERGE (s:PersonligAssistans {{id: row.id}})
+             SET s.utforare_id = row.utforare_id,
+                 s.handlaggare_id = row.handlaggare_id,
+                 s.lagrum = row.lagrum,
+                 s.beviljade_timmar_vecka = row.beviljade_timmar_vecka,
+                 s.utforda_timmar_vecka = row.utforda_timmar_vecka,
+                 s.finansiar = row.finansiar,
+                 s.ivo_tillsynsnummer = row.ivo_tillsynsnummer,
+                 s.beslutsdatum = row.beslutsdatum,
+                 s.giltigt_till = row.giltigt_till,
+                 s.status = row.status
+             MERGE (s)-[:FOR_CREATURE]->(c)",
+            list
+        ),
+        "BarnUnga" => format!(
+            "UNWIND [{}] AS row
+             MATCH (c:Creature {{id: row.creature_id}})
+             MERGE (s:BarnUnga {{id: row.id}})
+             SET s.utforare_id = row.utforare_id,
+                 s.handlaggare_id = row.handlaggare_id,
+                 s.insatstyp = row.insatstyp,
+                 s.lagrum = row.lagrum,
+                 s.placeringskommun = row.placeringskommun,
+                 s.kostnad_per_dygn = row.kostnad_per_dygn,
+                 s.startdatum = row.startdatum,
+                 s.slutdatum = row.slutdatum
+             MERGE (s)-[:FOR_CREATURE]->(c)",
+            list
+        ),
+        "BoendeDagligVerksamhet" => format!(
+            "UNWIND [{}] AS row
+             MATCH (c:Creature {{id: row.creature_id}})
+             MERGE (s:BoendeDagligVerksamhet {{id: row.id}})
+             SET s.utforare_id = row.utforare_id,
+                 s.handlaggare_id = row.handlaggare_id,
+                 s.typ = row.typ,
+                 s.lagrum = row.lagrum,
+                 s.besok_per_manad = row.besok_per_manad,
+                 s.beslutsdatum = row.beslutsdatum,
+                 s.giltighetsdatum = row.giltighetsdatum
+             MERGE (s)-[:FOR_CREATURE]->(c)",
+            list
+        ),
+        "EkonomisktBistand" => format!(
+            "UNWIND [{}] AS row
+             MATCH (c:Creature {{id: row.creature_id}})
+             MERGE (s:EkonomisktBistand {{id: row.id}})
+             SET s.handlaggare_id = row.handlaggare_id,
+                 s.andamal = row.andamal,
+                 s.belopp_kr = row.belopp_kr,
+                 s.period = row.period,
+                 s.aterkrav = row.aterkrav,
+                 s.aterkravsbelopp = row.aterkravsbelopp,
+                 s.utbetalningsdatum = row.utbetalningsdatum
+             MERGE (s)-[:FOR_CREATURE]->(c)",
+            list
+        ),
+        "Forsorjningsstod" => format!(
+            "UNWIND [{}] AS row
+             MATCH (c:Creature {{id: row.creature_id}})
+             MERGE (s:Forsorjningsstod {{id: row.id}})
+             SET s.handlaggare_id = row.handlaggare_id,
+                 s.belopp_kr = row.belopp_kr,
+                 s.period = row.period,
+                 s.antal_manader = row.antal_manader,
+                 s.aktivitetskrav_uppfyllt = row.aktivitetskrav_uppfyllt,
+                 s.kopplad_aktivitet = row.kopplad_aktivitet
+             MERGE (s)-[:FOR_CREATURE]->(c)",
+            list
+        ),
+        "Hemtjanst" => format!(
+            "UNWIND [{}] AS row
+             MATCH (c:Creature {{id: row.creature_id}})
+             MERGE (s:Hemtjanst {{id: row.id}})
+             SET s.utforare_id = row.utforare_id,
+                 s.handlaggare_id = row.handlaggare_id,
+                 s.driftform = row.driftform,
+                 s.beviljade_timmar_manad = row.beviljade_timmar_manad,
+                 s.utforda_timmar_manad = row.utforda_timmar_manad,
+                 s.insatstyper = row.insatstyper,
+                 s.kostnad_kr = row.kostnad_kr,
+                 s.beslutsdatum = row.beslutsdatum,
+                 s.giltigt_till = row.giltigt_till
+             MERGE (s)-[:FOR_CREATURE]->(c)",
+            list
+        ),
+        _ => unreachable!("unknown label"),
+    }
 }
 
 async fn load_creatures(
     conn: &mut MultiplexedConnection,
     graph_name: &str,
     files: &[PathBuf],
+    batch_size: usize,
 ) -> Result<()> {
     let creature_files: Vec<_> = files
         .iter()
@@ -285,20 +565,11 @@ async fn load_creatures(
                 });
             }
 
-            let params = json!({ "rows": rows });
-            let query = r#"
-UNWIND $rows AS row
-MERGE (c:Creature {id: row.id})
-SET c.name = row.name,
-    c.distrikt = row.distrikt,
-    c.kommun_id = row.kommun_id,
-    c.fk_person_id = row.fk_person_id,
-    c.af_arende_id = row.af_arende_id,
-    c.region_patient_id = row.region_patient_id,
-    c.skv_personnr_ref = row.skv_personnr_ref
-"#;
+            for chunk in rows.chunks(batch_size) {
+                let query = build_creature_query(chunk);
+                graph_query_raw(conn, graph_name, &query).await?;
+            }
 
-            graph_query(conn, graph_name, query, &params).await?;
             println!("Loaded {} creature rows from {}", batch.num_rows(), path.display());
         }
     }
@@ -306,24 +577,47 @@ SET c.name = row.name,
     Ok(())
 }
 
-fn classify_label(stem: &str) -> Option<&'static str> {
-    match stem {
-        "personlig_assistans" => Some("PersonligAssistans"),
-        "barn_unga" => Some("BarnUnga"),
-        "boende_daglig_verksamhet" => Some("BoendeDagligVerksamhet"),
-        "ekonomiskt_bistand" => Some("EkonomisktBistand"),
-        "forsorjningsstod" => Some("Forsorjningsstod"),
-        "hemtjanst" => Some("Hemtjanst"),
-        "formaner" => Some("Forman"),
-        "creatures" => None,
-        _ => None,
+async fn load_formaner_file(
+    conn: &mut MultiplexedConnection,
+    graph_name: &str,
+    path: &Path,
+    batch_size: usize,
+) -> Result<()> {
+    let mut stream = open_batch_stream(path).await?;
+    while let Some(batch) = stream.next().await {
+        let batch = batch?;
+        let personnummer = get_string_col(&batch, "personnummer")?;
+        let forman_id = get_string_col(&batch, "förmån_id")?;
+        let startdatum = get_date32_col(&batch, "startdatum")?;
+        let totalbelopp = get_f64_col(&batch, "totalbelopp")?;
+
+        let mut rows = Vec::with_capacity(batch.num_rows());
+        for row in 0..batch.num_rows() {
+            rows.push(FormanRow {
+                personnummer: personnummer.value(row).to_string(),
+                forman_id: forman_id.value(row).to_string(),
+                startdatum: startdatum.value(row),
+                slutdatum: opt_date32(&batch, "slutdatum", row)?,
+                totalbelopp: totalbelopp.value(row),
+            });
+        }
+
+        for chunk in rows.chunks(batch_size) {
+            let query = build_formaner_query(chunk);
+            graph_query_raw(conn, graph_name, &query).await?;
+        }
+
+        println!("Loaded {} formaner rows from {}", batch.num_rows(), path.display());
     }
+
+    Ok(())
 }
 
 async fn load_service_file(
     conn: &mut MultiplexedConnection,
     graph_name: &str,
     path: &Path,
+    batch_size: usize,
 ) -> Result<()> {
     let stem = file_stem_str(path)?;
     let label = match classify_label(stem) {
@@ -332,139 +626,34 @@ async fn load_service_file(
     };
 
     if stem == "formaner" {
-        let mut stream = open_batch_stream(path).await?;
-        while let Some(batch) = stream.next().await {
-            let batch = batch?;
-            let personnummer = get_string_col(&batch, "personnummer")?;
-            let forman_id = get_string_col(&batch, "förmån_id")?;
-            let startdatum = get_date32_col(&batch, "startdatum")?;
-            let totalbelopp = get_f64_col(&batch, "totalbelopp")?;
-
-            let mut rows = Vec::with_capacity(batch.num_rows());
-            for row in 0..batch.num_rows() {
-                rows.push(FormanRow {
-                    personnummer: personnummer.value(row).to_string(),
-                    forman_id: forman_id.value(row).to_string(),
-                    startdatum: startdatum.value(row),
-                    slutdatum: opt_date32(&batch, "slutdatum", row)?,
-                    totalbelopp: totalbelopp.value(row),
-                });
-            }
-
-            let params = json!({ "rows": rows });
-            let query = r#"
-UNWIND $rows AS row
-MATCH (c:Creature {skv_personnr_ref: row.personnummer})
-MERGE (f:Forman {id: row.forman_id})
-SET f.personnummer = row.personnummer,
-    f.startdatum = row.startdatum,
-    f.slutdatum = row.slutdatum,
-    f.totalbelopp = row.totalbelopp
-MERGE (f)-[:FOR_CREATURE]->(c)
-"#;
-            graph_query(conn, graph_name, query, &params).await?;
-            println!("Loaded {} formaner rows from {}", batch.num_rows(), path.display());
-        }
-        return Ok(());
+        return load_formaner_file(conn, graph_name, path, batch_size).await;
     }
 
     let mut stream = open_batch_stream(path).await?;
     while let Some(batch) = stream.next().await {
         let batch = batch?;
-        let ids = get_string_col(&batch, "id")?;
-        let creature_ids = get_string_col(&batch, "creature_id")?;
 
-        let mut rows = Vec::with_capacity(batch.num_rows());
-
+        let mut row_literals = Vec::with_capacity(batch.num_rows());
         for row in 0..batch.num_rows() {
-            let id = ids.value(row).to_string();
-            let creature_id = creature_ids.value(row).to_string();
-
-            let props = match stem {
-                "personlig_assistans" => json!({
-                    "utforare_id": opt_string(&batch, "utforare_id", row)?,
-                    "handlaggare_id": opt_string(&batch, "handlaggare_id", row)?,
-                    "lagrum": opt_string(&batch, "lagrum", row)?,
-                    "beviljade_timmar_vecka": opt_f64(&batch, "beviljade_timmar_vecka", row)?,
-                    "utforda_timmar_vecka": opt_f64(&batch, "utforda_timmar_vecka", row)?,
-                    "finansiar": opt_string(&batch, "finansiar", row)?,
-                    "ivo_tillsynsnummer": opt_string(&batch, "ivo_tillsynsnummer", row)?,
-                    "beslutsdatum": opt_date32(&batch, "beslutsdatum", row)?,
-                    "giltigt_till": opt_date32(&batch, "giltigt_till", row)?,
-                    "status": opt_string(&batch, "status", row)?,
-                }),
-                "barn_unga" => json!({
-                    "utforare_id": opt_string(&batch, "utforare_id", row)?,
-                    "handlaggare_id": opt_string(&batch, "handlaggare_id", row)?,
-                    "insatstyp": opt_string(&batch, "insatstyp", row)?,
-                    "lagrum": opt_string(&batch, "lagrum", row)?,
-                    "placeringskommun": opt_string(&batch, "placeringskommun", row)?,
-                    "kostnad_per_dygn": opt_f64(&batch, "kostnad_per_dygn", row)?,
-                    "startdatum": opt_date32(&batch, "startdatum", row)?,
-                    "slutdatum": opt_date32(&batch, "slutdatum", row)?,
-                }),
-                "boende_daglig_verksamhet" => json!({
-                    "utforare_id": opt_string(&batch, "utforare_id", row)?,
-                    "handlaggare_id": opt_string(&batch, "handlaggare_id", row)?,
-                    "typ": opt_string(&batch, "typ", row)?,
-                    "lagrum": opt_string(&batch, "lagrum", row)?,
-                    "besok_per_manad": opt_i32(&batch, "besok_per_manad", row)?,
-                    "beslutsdatum": opt_date32(&batch, "beslutsdatum", row)?,
-                    "giltighetsdatum": opt_date32(&batch, "giltighetsdatum", row)?,
-                }),
-                "ekonomiskt_bistand" => json!({
-                    "handlaggare_id": opt_string(&batch, "handlaggare_id", row)?,
-                    "andamal": opt_string(&batch, "andamal", row)?,
-                    "belopp_kr": opt_f64(&batch, "belopp_kr", row)?,
-                    "period": opt_string(&batch, "period", row)?,
-                    "aterkrav": opt_bool(&batch, "aterkrav", row)?,
-                    "aterkravsbelopp": opt_f64(&batch, "aterkravsbelopp", row)?,
-                    "utbetalningsdatum": opt_date32(&batch, "utbetalningsdatum", row)?,
-                }),
-                "forsorjningsstod" => json!({
-                    "handlaggare_id": opt_string(&batch, "handlaggare_id", row)?,
-                    "belopp_kr": opt_f64(&batch, "belopp_kr", row)?,
-                    "period": opt_string(&batch, "period", row)?,
-                    "antal_manader": opt_i32(&batch, "antal_manader", row)?,
-                    "aktivitetskrav_uppfyllt": opt_bool(&batch, "aktivitetskrav_uppfyllt", row)?,
-                    "kopplad_aktivitet": opt_string(&batch, "kopplad_aktivitet", row)?,
-                }),
-                "hemtjanst" => json!({
-                    "utforare_id": opt_string(&batch, "utforare_id", row)?,
-                    "handlaggare_id": opt_string(&batch, "handlaggare_id", row)?,
-                    "driftform": opt_string(&batch, "driftform", row)?,
-                    "beviljade_timmar_manad": opt_f64(&batch, "beviljade_timmar_manad", row)?,
-                    "utforda_timmar_manad": opt_f64(&batch, "utforda_timmar_manad", row)?,
-                    "insatstyper": opt_string(&batch, "insatstyper", row)?,
-                    "kostnad_kr": opt_f64(&batch, "kostnad_kr", row)?,
-                    "beslutsdatum": opt_date32(&batch, "beslutsdatum", row)?,
-                    "giltigt_till": opt_date32(&batch, "giltigt_till", row)?,
-                }),
+            let lit = match stem {
+                "personlig_assistans" => build_personlig_assistans_row(&batch, row)?,
+                "barn_unga" => build_barn_unga_row(&batch, row)?,
+                "boende_daglig_verksamhet" => {
+                    build_boende_daglig_verksamhet_row(&batch, row)?
+                }
+                "ekonomiskt_bistand" => build_ekonomiskt_bistand_row(&batch, row)?,
+                "forsorjningsstod" => build_forsorjningsstod_row(&batch, row)?,
+                "hemtjanst" => build_hemtjanst_row(&batch, row)?,
                 _ => bail!("unhandled stem {stem}"),
             };
-
-            rows.push(ServiceRow {
-                id,
-                creature_id,
-                label: label.to_string(),
-                props,
-            });
+            row_literals.push(lit);
         }
 
-        // label cannot be parameterized, so use one fixed query per file type
-        let query = format!(
-            r#"
-UNWIND $rows AS row
-MATCH (c:Creature {{id: row.creature_id}})
-MERGE (s:{label} {{id: row.id}})
-SET s += row.props
-MERGE (s)-[:FOR_CREATURE]->(c)
-"#,
-            label = label
-        );
+        for chunk in row_literals.chunks(batch_size) {
+            let query = build_service_query(label, chunk);
+            graph_query_raw(conn, graph_name, &query).await?;
+        }
 
-        let params = json!({ "rows": rows });
-        graph_query(conn, graph_name, &query, &params).await?;
         println!("Loaded {} {} rows from {}", batch.num_rows(), stem, path.display());
     }
 
@@ -485,6 +674,11 @@ async fn main() -> Result<()> {
         .nth(3)
         .unwrap_or_else(|| "ubm_graph".to_string());
 
+    let batch_size = std::env::var("BATCH_SIZE")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(100);
+
     let root = PathBuf::from(root);
     if !root.exists() {
         bail!("input root does not exist: {}", root.display());
@@ -492,6 +686,9 @@ async fn main() -> Result<()> {
 
     let files = discover_parquet_files(&root);
     println!("Found {} parquet files under {}", files.len(), root.display());
+    println!("Using redis/falkordb URL: {}", redis_url);
+    println!("Graph name: {}", graph_name);
+    println!("Batch size: {}", batch_size);
 
     let client = redis::Client::open(redis_url.clone())?;
     let mut conn = client
@@ -499,14 +696,12 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("connect redis/falkordb at {redis_url}"))?;
 
-    load_creatures(&mut conn, &graph_name, &files).await?;
+    load_creatures(&mut conn, &graph_name, &files, batch_size).await?;
 
     for path in &files {
         let stem = file_stem_str(path)?;
-        if stem != "creatures" {
-            if let Some(_) = classify_label(stem) {
-                load_service_file(&mut conn, &graph_name, path).await?;
-            }
+        if stem != "creatures" && classify_label(stem).is_some() {
+            load_service_file(&mut conn, &graph_name, path, batch_size).await?;
         }
     }
 
