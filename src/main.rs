@@ -5,10 +5,10 @@ use arrow_array::{
 };
 use futures::StreamExt;
 use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
-use redis::aio::MultiplexedConnection;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs::File;
+use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 use walkdir::WalkDir;
 
@@ -192,7 +192,7 @@ async fn open_batch_stream(
 }
 
 async fn graph_query_raw(
-    conn: &mut MultiplexedConnection,
+    conn: &mut redis::aio::MultiplexedConnection,
     graph_name: &str,
     query: &str,
 ) -> Result<()> {
@@ -201,9 +201,9 @@ async fn graph_query_raw(
 
     let fut = cmd.query_async::<redis::Value>(conn);
 
-    timeout(Duration::from_secs(30), fut)
+    timeout(Duration::from_secs(60), fut)
         .await
-        .context("GRAPH.QUERY timed out after 30s")?
+        .context("GRAPH.QUERY timed out after 60s")?
         .with_context(|| "GRAPH.QUERY failed")?;
 
     Ok(())
@@ -283,14 +283,16 @@ fn build_creature_query(rows: &[CreatureRow]) -> String {
 
     format!(
         "UNWIND [{}] AS row
-         MERGE (c:Creature {{id: row.id}})
-         SET c.name = row.name,
-             c.distrikt = row.distrikt,
-             c.kommun_id = row.kommun_id,
-             c.fk_person_id = row.fk_person_id,
-             c.af_arende_id = row.af_arende_id,
-             c.region_patient_id = row.region_patient_id,
-             c.skv_personnr_ref = row.skv_personnr_ref",
+         CREATE (c:Creature {{
+             id: row.id,
+             name: row.name,
+             distrikt: row.distrikt,
+             kommun_id: row.kommun_id,
+             fk_person_id: row.fk_person_id,
+             af_arende_id: row.af_arende_id,
+             region_patient_id: row.region_patient_id,
+             skv_personnr_ref: row.skv_personnr_ref
+         }})",
         list
     )
 }
@@ -314,12 +316,14 @@ fn build_formaner_query(rows: &[FormanRow]) -> String {
     format!(
         "UNWIND [{}] AS row
          MATCH (c:Creature {{skv_personnr_ref: row.personnummer}})
-         MERGE (f:Forman {{id: row.forman_id}})
-         SET f.personnummer = row.personnummer,
-             f.startdatum = row.startdatum,
-             f.slutdatum = row.slutdatum,
-             f.totalbelopp = row.totalbelopp
-         MERGE (f)-[:FOR_CREATURE]->(c)",
+         CREATE (f:Forman {{
+             id: row.forman_id,
+             personnummer: row.personnummer,
+             startdatum: row.startdatum,
+             slutdatum: row.slutdatum,
+             totalbelopp: row.totalbelopp
+         }})
+         CREATE (f)-[:FOR_CREATURE]->(c)",
         list
     )
 }
@@ -426,90 +430,102 @@ fn build_service_query(label: &str, row_literals: &[String]) -> String {
         "PersonligAssistans" => format!(
             "UNWIND [{}] AS row
              MATCH (c:Creature {{id: row.creature_id}})
-             MERGE (s:PersonligAssistans {{id: row.id}})
-             SET s.utforare_id = row.utforare_id,
-                 s.handlaggare_id = row.handlaggare_id,
-                 s.lagrum = row.lagrum,
-                 s.beviljade_timmar_vecka = row.beviljade_timmar_vecka,
-                 s.utforda_timmar_vecka = row.utforda_timmar_vecka,
-                 s.finansiar = row.finansiar,
-                 s.ivo_tillsynsnummer = row.ivo_tillsynsnummer,
-                 s.beslutsdatum = row.beslutsdatum,
-                 s.giltigt_till = row.giltigt_till,
-                 s.status = row.status
-             MERGE (s)-[:FOR_CREATURE]->(c)",
+             CREATE (s:PersonligAssistans {{
+                 id: row.id,
+                 utforare_id: row.utforare_id,
+                 handlaggare_id: row.handlaggare_id,
+                 lagrum: row.lagrum,
+                 beviljade_timmar_vecka: row.beviljade_timmar_vecka,
+                 utforda_timmar_vecka: row.utforda_timmar_vecka,
+                 finansiar: row.finansiar,
+                 ivo_tillsynsnummer: row.ivo_tillsynsnummer,
+                 beslutsdatum: row.beslutsdatum,
+                 giltigt_till: row.giltigt_till,
+                 status: row.status
+             }})
+             CREATE (s)-[:FOR_CREATURE]->(c)",
             list
         ),
         "BarnUnga" => format!(
             "UNWIND [{}] AS row
              MATCH (c:Creature {{id: row.creature_id}})
-             MERGE (s:BarnUnga {{id: row.id}})
-             SET s.utforare_id = row.utforare_id,
-                 s.handlaggare_id = row.handlaggare_id,
-                 s.insatstyp = row.insatstyp,
-                 s.lagrum = row.lagrum,
-                 s.placeringskommun = row.placeringskommun,
-                 s.kostnad_per_dygn = row.kostnad_per_dygn,
-                 s.startdatum = row.startdatum,
-                 s.slutdatum = row.slutdatum
-             MERGE (s)-[:FOR_CREATURE]->(c)",
+             CREATE (s:BarnUnga {{
+                 id: row.id,
+                 utforare_id: row.utforare_id,
+                 handlaggare_id: row.handlaggare_id,
+                 insatstyp: row.insatstyp,
+                 lagrum: row.lagrum,
+                 placeringskommun: row.placeringskommun,
+                 kostnad_per_dygn: row.kostnad_per_dygn,
+                 startdatum: row.startdatum,
+                 slutdatum: row.slutdatum
+             }})
+             CREATE (s)-[:FOR_CREATURE]->(c)",
             list
         ),
         "BoendeDagligVerksamhet" => format!(
             "UNWIND [{}] AS row
              MATCH (c:Creature {{id: row.creature_id}})
-             MERGE (s:BoendeDagligVerksamhet {{id: row.id}})
-             SET s.utforare_id = row.utforare_id,
-                 s.handlaggare_id = row.handlaggare_id,
-                 s.typ = row.typ,
-                 s.lagrum = row.lagrum,
-                 s.besok_per_manad = row.besok_per_manad,
-                 s.beslutsdatum = row.beslutsdatum,
-                 s.giltighetsdatum = row.giltighetsdatum
-             MERGE (s)-[:FOR_CREATURE]->(c)",
+             CREATE (s:BoendeDagligVerksamhet {{
+                 id: row.id,
+                 utforare_id: row.utforare_id,
+                 handlaggare_id: row.handlaggare_id,
+                 typ: row.typ,
+                 lagrum: row.lagrum,
+                 besok_per_manad: row.besok_per_manad,
+                 beslutsdatum: row.beslutsdatum,
+                 giltighetsdatum: row.giltighetsdatum
+             }})
+             CREATE (s)-[:FOR_CREATURE]->(c)",
             list
         ),
         "EkonomisktBistand" => format!(
             "UNWIND [{}] AS row
              MATCH (c:Creature {{id: row.creature_id}})
-             MERGE (s:EkonomisktBistand {{id: row.id}})
-             SET s.handlaggare_id = row.handlaggare_id,
-                 s.andamal = row.andamal,
-                 s.belopp_kr = row.belopp_kr,
-                 s.period = row.period,
-                 s.aterkrav = row.aterkrav,
-                 s.aterkravsbelopp = row.aterkravsbelopp,
-                 s.utbetalningsdatum = row.utbetalningsdatum
-             MERGE (s)-[:FOR_CREATURE]->(c)",
+             CREATE (s:EkonomisktBistand {{
+                 id: row.id,
+                 handlaggare_id: row.handlaggare_id,
+                 andamal: row.andamal,
+                 belopp_kr: row.belopp_kr,
+                 period: row.period,
+                 aterkrav: row.aterkrav,
+                 aterkravsbelopp: row.aterkravsbelopp,
+                 utbetalningsdatum: row.utbetalningsdatum
+             }})
+             CREATE (s)-[:FOR_CREATURE]->(c)",
             list
         ),
         "Forsorjningsstod" => format!(
             "UNWIND [{}] AS row
              MATCH (c:Creature {{id: row.creature_id}})
-             MERGE (s:Forsorjningsstod {{id: row.id}})
-             SET s.handlaggare_id = row.handlaggare_id,
-                 s.belopp_kr = row.belopp_kr,
-                 s.period = row.period,
-                 s.antal_manader = row.antal_manader,
-                 s.aktivitetskrav_uppfyllt = row.aktivitetskrav_uppfyllt,
-                 s.kopplad_aktivitet = row.kopplad_aktivitet
-             MERGE (s)-[:FOR_CREATURE]->(c)",
+             CREATE (s:Forsorjningsstod {{
+                 id: row.id,
+                 handlaggare_id: row.handlaggare_id,
+                 belopp_kr: row.belopp_kr,
+                 period: row.period,
+                 antal_manader: row.antal_manader,
+                 aktivitetskrav_uppfyllt: row.aktivitetskrav_uppfyllt,
+                 kopplad_aktivitet: row.kopplad_aktivitet
+             }})
+             CREATE (s)-[:FOR_CREATURE]->(c)",
             list
         ),
         "Hemtjanst" => format!(
             "UNWIND [{}] AS row
              MATCH (c:Creature {{id: row.creature_id}})
-             MERGE (s:Hemtjanst {{id: row.id}})
-             SET s.utforare_id = row.utforare_id,
-                 s.handlaggare_id = row.handlaggare_id,
-                 s.driftform = row.driftform,
-                 s.beviljade_timmar_manad = row.beviljade_timmar_manad,
-                 s.utforda_timmar_manad = row.utforda_timmar_manad,
-                 s.insatstyper = row.insatstyper,
-                 s.kostnad_kr = row.kostnad_kr,
-                 s.beslutsdatum = row.beslutsdatum,
-                 s.giltigt_till = row.giltigt_till
-             MERGE (s)-[:FOR_CREATURE]->(c)",
+             CREATE (s:Hemtjanst {{
+                 id: row.id,
+                 utforare_id: row.utforare_id,
+                 handlaggare_id: row.handlaggare_id,
+                 driftform: row.driftform,
+                 beviljade_timmar_manad: row.beviljade_timmar_manad,
+                 utforda_timmar_manad: row.utforda_timmar_manad,
+                 insatstyper: row.insatstyper,
+                 kostnad_kr: row.kostnad_kr,
+                 beslutsdatum: row.beslutsdatum,
+                 giltigt_till: row.giltigt_till
+             }})
+             CREATE (s)-[:FOR_CREATURE]->(c)",
             list
         ),
         _ => unreachable!("unknown label"),
@@ -517,7 +533,7 @@ fn build_service_query(label: &str, row_literals: &[String]) -> String {
 }
 
 async fn load_creatures(
-    conn: &mut MultiplexedConnection,
+    conn: &mut redis::aio::MultiplexedConnection,
     graph_name: &str,
     files: &[PathBuf],
     batch_size: usize,
@@ -530,36 +546,14 @@ async fn load_creatures(
 
     println!("Loading creatures from {} files", creature_files.len());
 
-    for (file_idx, path) in creature_files.iter().enumerate() {
-        println!(
-            "[creatures {}/{}] opening {}",
-            file_idx + 1,
-            creature_files.len(),
-            path.display()
-        );
+    let mut grand_total = 0usize;
 
-        let mut stream = open_batch_stream(path).await?;
-        println!(
-            "[creatures {}/{}] opened {}",
-            file_idx + 1,
-            creature_files.len(),
-            path.display()
-        );
-
+    for path in creature_files {
+        let mut stream = open_batch_stream(&path).await?;
         let mut total_rows = 0usize;
-        let mut total_batches = 0usize;
 
         while let Some(batch) = stream.next().await {
-            println!(
-                "[creatures {}/{}] reading batch {} from {}",
-                file_idx + 1,
-                creature_files.len(),
-                total_batches + 1,
-                path.display()
-            );
-
             let batch = batch?;
-            total_batches += 1;
 
             let ids = get_binary_col(&batch, "id")?;
             let names = get_string_col(&batch, "name")?;
@@ -599,71 +593,32 @@ async fn load_creatures(
             }
 
             total_rows += rows.len();
-            println!(
-                "[creatures {}/{}] built {} rows from batch {} in {}",
-                file_idx + 1,
-                creature_files.len(),
-                rows.len(),
-                total_batches,
-                path.display()
-            );
+            grand_total += rows.len();
 
-            for (chunk_idx, chunk) in rows.chunks(batch_size).enumerate() {
-                println!(
-                    "[creatures {}/{}] sending chunk {} ({} rows) from {}",
-                    file_idx + 1,
-                    creature_files.len(),
-                    chunk_idx + 1,
-                    chunk.len(),
-                    path.display()
-                );
-
+            for chunk in rows.chunks(batch_size) {
                 let query = build_creature_query(chunk);
                 graph_query_raw(conn, graph_name, &query).await?;
-
-                println!(
-                    "[creatures {}/{}] sent chunk {} from {}",
-                    file_idx + 1,
-                    creature_files.len(),
-                    chunk_idx + 1,
-                    path.display()
-                );
             }
         }
 
-        println!(
-            "Loaded file {}: label=Creature, batches={}, rows={}",
-            path.display(),
-            total_batches,
-            total_rows
-        );
+        println!("Loaded creatures file {} rows={}", path.display(), total_rows);
     }
 
+    println!("Finished loading creatures total_rows={}", grand_total);
     Ok(())
 }
 
 async fn load_formaner_file(
-    conn: &mut MultiplexedConnection,
+    conn: &mut redis::aio::MultiplexedConnection,
     graph_name: &str,
     path: &Path,
     batch_size: usize,
-) -> Result<()> {
-    println!("[formaner] opening {}", path.display());
+) -> Result<usize> {
     let mut stream = open_batch_stream(path).await?;
-    println!("[formaner] opened {}", path.display());
-
     let mut total_rows = 0usize;
-    let mut total_batches = 0usize;
 
     while let Some(batch) = stream.next().await {
-        println!(
-            "[formaner] reading batch {} from {}",
-            total_batches + 1,
-            path.display()
-        );
-
         let batch = batch?;
-        total_batches += 1;
 
         let personnummer = get_string_col(&batch, "personnummer")?;
         let forman_id = get_string_col(&batch, "förmån_id")?;
@@ -682,75 +637,37 @@ async fn load_formaner_file(
         }
 
         total_rows += rows.len();
-        println!(
-            "[formaner] built {} rows from batch {} in {}",
-            rows.len(),
-            total_batches,
-            path.display()
-        );
 
-        for (chunk_idx, chunk) in rows.chunks(batch_size).enumerate() {
-            println!(
-                "[formaner] sending chunk {} ({} rows) from {}",
-                chunk_idx + 1,
-                chunk.len(),
-                path.display()
-            );
-
+        for chunk in rows.chunks(batch_size) {
             let query = build_formaner_query(chunk);
             graph_query_raw(conn, graph_name, &query).await?;
-
-            println!(
-                "[formaner] sent chunk {} from {}",
-                chunk_idx + 1,
-                path.display()
-            );
         }
     }
 
-    println!(
-        "Loaded file {}: label=Forman, batches={}, rows={}",
-        path.display(),
-        total_batches,
-        total_rows
-    );
-
-    Ok(())
+    Ok(total_rows)
 }
 
 async fn load_service_file(
-    conn: &mut MultiplexedConnection,
+    conn: &mut redis::aio::MultiplexedConnection,
     graph_name: &str,
     path: &Path,
     batch_size: usize,
-) -> Result<()> {
+) -> Result<usize> {
     let stem = file_stem_str(path)?;
     let label = match classify_label(stem) {
         Some(x) => x,
-        None => return Ok(()),
+        None => return Ok(0),
     };
 
     if stem == "formaner" {
         return load_formaner_file(conn, graph_name, path, batch_size).await;
     }
 
-    println!("[{}] opening {}", stem, path.display());
     let mut stream = open_batch_stream(path).await?;
-    println!("[{}] opened {}", stem, path.display());
-
     let mut total_rows = 0usize;
-    let mut total_batches = 0usize;
 
     while let Some(batch) = stream.next().await {
-        println!(
-            "[{}] reading batch {} from {}",
-            stem,
-            total_batches + 1,
-            path.display()
-        );
-
         let batch = batch?;
-        total_batches += 1;
 
         let mut row_literals = Vec::with_capacity(batch.num_rows());
         for row in 0..batch.num_rows() {
@@ -767,41 +684,50 @@ async fn load_service_file(
         }
 
         total_rows += row_literals.len();
-        println!(
-            "[{}] built {} rows from batch {} in {}",
-            stem,
-            row_literals.len(),
-            total_batches,
-            path.display()
-        );
 
-        for (chunk_idx, chunk) in row_literals.chunks(batch_size).enumerate() {
-            println!(
-                "[{}] sending chunk {} ({} rows) from {}",
-                stem,
-                chunk_idx + 1,
-                chunk.len(),
-                path.display()
-            );
-
+        for chunk in row_literals.chunks(batch_size) {
             let query = build_service_query(label, chunk);
             graph_query_raw(conn, graph_name, &query).await?;
-
-            println!(
-                "[{}] sent chunk {} from {}",
-                stem,
-                chunk_idx + 1,
-                path.display()
-            );
         }
     }
 
+    Ok(total_rows)
+}
+
+async fn worker_loop(
+    worker_id: usize,
+    redis_url: String,
+    graph_name: String,
+    batch_size: usize,
+    mut rx: mpsc::Receiver<PathBuf>,
+) -> Result<()> {
+    let client = redis::Client::open(redis_url.clone())?;
+    let mut conn = client
+        .get_multiplexed_tokio_connection()
+        .await
+        .with_context(|| format!("worker {worker_id} connect redis/falkordb at {redis_url}"))?;
+
+    let mut files_done = 0usize;
+    let mut rows_done = 0usize;
+
+    while let Some(path) = rx.recv().await {
+        let rows = load_service_file(&mut conn, &graph_name, &path, batch_size).await?;
+        files_done += 1;
+        rows_done += rows;
+
+        println!(
+            "[worker {}] loaded {} rows from {} (files_done={}, rows_done={})",
+            worker_id,
+            rows,
+            path.display(),
+            files_done,
+            rows_done
+        );
+    }
+
     println!(
-        "Loaded file {}: label={}, batches={}, rows={}",
-        path.display(),
-        label,
-        total_batches,
-        total_rows
+        "[worker {}] finished files_done={} rows_done={}",
+        worker_id, files_done, rows_done
     );
 
     Ok(())
@@ -824,7 +750,12 @@ async fn main() -> Result<()> {
     let batch_size = std::env::var("BATCH_SIZE")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(100);
+        .unwrap_or(500);
+
+    let workers = std::env::var("WORKERS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(8);
 
     let root = PathBuf::from(root);
     if !root.exists() {
@@ -839,22 +770,56 @@ async fn main() -> Result<()> {
     println!("Using redis/falkordb URL: {}", redis_url);
     println!("Graph name: {}", graph_name);
     println!("Batch size: {}", batch_size);
+    println!("Workers: {}", workers);
 
-    let client = redis::Client::open(redis_url.clone())?;
-    let mut conn = client
-        .get_multiplexed_tokio_connection()
-        .await
-        .with_context(|| format!("connect redis/falkordb at {redis_url}"))?;
+    {
+        let client = redis::Client::open(redis_url.clone())?;
+        let mut conn = client
+            .get_multiplexed_tokio_connection()
+            .await
+            .with_context(|| format!("connect redis/falkordb at {redis_url}"))?;
 
-    println!("Connected to redis/falkordb");
+        println!("Loading creatures phase...");
+        load_creatures(&mut conn, &graph_name, &files, batch_size).await?;
+    }
 
-    load_creatures(&mut conn, &graph_name, &files, batch_size).await?;
+    let service_files: Vec<PathBuf> = files
+        .into_iter()
+        .filter(|path| match file_stem_str(path) {
+            Ok(stem) => stem != "creatures" && classify_label(stem).is_some(),
+            Err(_) => false,
+        })
+        .collect();
 
-    for path in &files {
-        let stem = file_stem_str(path)?;
-        if stem != "creatures" && classify_label(stem).is_some() {
-            load_service_file(&mut conn, &graph_name, path, batch_size).await?;
-        }
+    println!("Loading service files phase... files={}", service_files.len());
+
+    let mut senders = Vec::new();
+    let mut handles = Vec::new();
+
+    for worker_id in 0..workers {
+        let (tx, rx) = mpsc::channel::<PathBuf>(32);
+        senders.push(tx);
+
+        let redis_url = redis_url.clone();
+        let graph_name = graph_name.clone();
+
+        handles.push(tokio::spawn(async move {
+            worker_loop(worker_id + 1, redis_url, graph_name, batch_size, rx).await
+        }));
+    }
+
+    for (idx, path) in service_files.into_iter().enumerate() {
+        let worker_idx = idx % workers;
+        senders[worker_idx]
+            .send(path)
+            .await
+            .context("send path to worker")?;
+    }
+
+    drop(senders);
+
+    for handle in handles {
+        handle.await??;
     }
 
     println!("Done loading graph {}", graph_name);
