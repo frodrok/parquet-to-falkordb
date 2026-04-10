@@ -196,12 +196,12 @@ async fn graph_query_raw(
     graph_name: &str,
     query: &str,
 ) -> Result<()> {
-    let cmd = redis::cmd("GRAPH.QUERY")
-        .arg(graph_name)
-        .arg(query)
-        .query_async::<redis::Value>(conn);
+    let mut cmd = redis::cmd("GRAPH.QUERY");
+    cmd.arg(graph_name).arg(query);
 
-    timeout(Duration::from_secs(30), cmd)
+    let fut = cmd.query_async::<redis::Value>(conn);
+
+    timeout(Duration::from_secs(30), fut)
         .await
         .context("GRAPH.QUERY timed out after 30s")?
         .with_context(|| "GRAPH.QUERY failed")?;
