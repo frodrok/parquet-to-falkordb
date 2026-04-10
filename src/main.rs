@@ -9,6 +9,7 @@ use redis::aio::MultiplexedConnection;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs::File;
+use tokio::time::{timeout, Duration};
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone)]
@@ -195,12 +196,16 @@ async fn graph_query_raw(
     graph_name: &str,
     query: &str,
 ) -> Result<()> {
-    let _: redis::Value = redis::cmd("GRAPH.QUERY")
+    let cmd = redis::cmd("GRAPH.QUERY")
         .arg(graph_name)
         .arg(query)
-        .query_async(conn)
+        .query_async::<redis::Value>(conn);
+
+    timeout(Duration::from_secs(30), cmd)
         .await
-        .with_context(|| format!("GRAPH.QUERY failed"))?;
+        .context("GRAPH.QUERY timed out after 30s")?
+        .with_context(|| "GRAPH.QUERY failed")?;
+
     Ok(())
 }
 
@@ -525,12 +530,34 @@ async fn load_creatures(
 
     println!("Loading creatures from {} files", creature_files.len());
 
-    for path in creature_files {
-        let mut stream = open_batch_stream(&path).await?;
+    for (file_idx, path) in creature_files.iter().enumerate() {
+        println!(
+            "[creatures {}/{}] opening {}",
+            file_idx + 1,
+            creature_files.len(),
+            path.display()
+        );
+
+        let mut stream = open_batch_stream(path).await?;
+        println!(
+            "[creatures {}/{}] opened {}",
+            file_idx + 1,
+            creature_files.len(),
+            path.display()
+        );
+
         let mut total_rows = 0usize;
         let mut total_batches = 0usize;
 
         while let Some(batch) = stream.next().await {
+            println!(
+                "[creatures {}/{}] reading batch {} from {}",
+                file_idx + 1,
+                creature_files.len(),
+                total_batches + 1,
+                path.display()
+            );
+
             let batch = batch?;
             total_batches += 1;
 
@@ -572,10 +599,35 @@ async fn load_creatures(
             }
 
             total_rows += rows.len();
+            println!(
+                "[creatures {}/{}] built {} rows from batch {} in {}",
+                file_idx + 1,
+                creature_files.len(),
+                rows.len(),
+                total_batches,
+                path.display()
+            );
 
-            for chunk in rows.chunks(batch_size) {
+            for (chunk_idx, chunk) in rows.chunks(batch_size).enumerate() {
+                println!(
+                    "[creatures {}/{}] sending chunk {} ({} rows) from {}",
+                    file_idx + 1,
+                    creature_files.len(),
+                    chunk_idx + 1,
+                    chunk.len(),
+                    path.display()
+                );
+
                 let query = build_creature_query(chunk);
                 graph_query_raw(conn, graph_name, &query).await?;
+
+                println!(
+                    "[creatures {}/{}] sent chunk {} from {}",
+                    file_idx + 1,
+                    creature_files.len(),
+                    chunk_idx + 1,
+                    path.display()
+                );
             }
         }
 
@@ -596,11 +648,20 @@ async fn load_formaner_file(
     path: &Path,
     batch_size: usize,
 ) -> Result<()> {
+    println!("[formaner] opening {}", path.display());
     let mut stream = open_batch_stream(path).await?;
+    println!("[formaner] opened {}", path.display());
+
     let mut total_rows = 0usize;
     let mut total_batches = 0usize;
 
     while let Some(batch) = stream.next().await {
+        println!(
+            "[formaner] reading batch {} from {}",
+            total_batches + 1,
+            path.display()
+        );
+
         let batch = batch?;
         total_batches += 1;
 
@@ -621,10 +682,29 @@ async fn load_formaner_file(
         }
 
         total_rows += rows.len();
+        println!(
+            "[formaner] built {} rows from batch {} in {}",
+            rows.len(),
+            total_batches,
+            path.display()
+        );
 
-        for chunk in rows.chunks(batch_size) {
+        for (chunk_idx, chunk) in rows.chunks(batch_size).enumerate() {
+            println!(
+                "[formaner] sending chunk {} ({} rows) from {}",
+                chunk_idx + 1,
+                chunk.len(),
+                path.display()
+            );
+
             let query = build_formaner_query(chunk);
             graph_query_raw(conn, graph_name, &query).await?;
+
+            println!(
+                "[formaner] sent chunk {} from {}",
+                chunk_idx + 1,
+                path.display()
+            );
         }
     }
 
@@ -654,11 +734,21 @@ async fn load_service_file(
         return load_formaner_file(conn, graph_name, path, batch_size).await;
     }
 
+    println!("[{}] opening {}", stem, path.display());
     let mut stream = open_batch_stream(path).await?;
+    println!("[{}] opened {}", stem, path.display());
+
     let mut total_rows = 0usize;
     let mut total_batches = 0usize;
 
     while let Some(batch) = stream.next().await {
+        println!(
+            "[{}] reading batch {} from {}",
+            stem,
+            total_batches + 1,
+            path.display()
+        );
+
         let batch = batch?;
         total_batches += 1;
 
@@ -677,10 +767,32 @@ async fn load_service_file(
         }
 
         total_rows += row_literals.len();
+        println!(
+            "[{}] built {} rows from batch {} in {}",
+            stem,
+            row_literals.len(),
+            total_batches,
+            path.display()
+        );
 
-        for chunk in row_literals.chunks(batch_size) {
+        for (chunk_idx, chunk) in row_literals.chunks(batch_size).enumerate() {
+            println!(
+                "[{}] sending chunk {} ({} rows) from {}",
+                stem,
+                chunk_idx + 1,
+                chunk.len(),
+                path.display()
+            );
+
             let query = build_service_query(label, chunk);
             graph_query_raw(conn, graph_name, &query).await?;
+
+            println!(
+                "[{}] sent chunk {} from {}",
+                stem,
+                chunk_idx + 1,
+                path.display()
+            );
         }
     }
 
@@ -733,6 +845,8 @@ async fn main() -> Result<()> {
         .get_multiplexed_tokio_connection()
         .await
         .with_context(|| format!("connect redis/falkordb at {redis_url}"))?;
+
+    println!("Connected to redis/falkordb");
 
     load_creatures(&mut conn, &graph_name, &files, batch_size).await?;
 
