@@ -1,0 +1,4 @@
+MATCH (c:Creature) RETURN count(c);
+MATCH (n:PersonligAssistans) RETURN count(n);
+MATCH ()-[r:FOR_CREATURE]->() RETURN count(r);
+MATCH (f:Forman) RETURN count(f);

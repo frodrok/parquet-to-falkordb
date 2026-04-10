@@ -6,6 +6,7 @@ use arrow_array::{
 use futures::StreamExt;
 use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
 use redis::aio::MultiplexedConnection;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs::File;
 use walkdir::WalkDir;
@@ -526,8 +527,13 @@ async fn load_creatures(
 
     for path in creature_files {
         let mut stream = open_batch_stream(&path).await?;
+        let mut total_rows = 0usize;
+        let mut total_batches = 0usize;
+
         while let Some(batch) = stream.next().await {
             let batch = batch?;
+            total_batches += 1;
+
             let ids = get_binary_col(&batch, "id")?;
             let names = get_string_col(&batch, "name")?;
             let distrikts = get_string_col(&batch, "distrikt")?;
@@ -565,13 +571,20 @@ async fn load_creatures(
                 });
             }
 
+            total_rows += rows.len();
+
             for chunk in rows.chunks(batch_size) {
                 let query = build_creature_query(chunk);
                 graph_query_raw(conn, graph_name, &query).await?;
             }
-
-            println!("Loaded {} creature rows from {}", batch.num_rows(), path.display());
         }
+
+        println!(
+            "Loaded file {}: label=Creature, batches={}, rows={}",
+            path.display(),
+            total_batches,
+            total_rows
+        );
     }
 
     Ok(())
@@ -584,8 +597,13 @@ async fn load_formaner_file(
     batch_size: usize,
 ) -> Result<()> {
     let mut stream = open_batch_stream(path).await?;
+    let mut total_rows = 0usize;
+    let mut total_batches = 0usize;
+
     while let Some(batch) = stream.next().await {
         let batch = batch?;
+        total_batches += 1;
+
         let personnummer = get_string_col(&batch, "personnummer")?;
         let forman_id = get_string_col(&batch, "förmån_id")?;
         let startdatum = get_date32_col(&batch, "startdatum")?;
@@ -602,13 +620,20 @@ async fn load_formaner_file(
             });
         }
 
+        total_rows += rows.len();
+
         for chunk in rows.chunks(batch_size) {
             let query = build_formaner_query(chunk);
             graph_query_raw(conn, graph_name, &query).await?;
         }
-
-        println!("Loaded {} formaner rows from {}", batch.num_rows(), path.display());
     }
+
+    println!(
+        "Loaded file {}: label=Forman, batches={}, rows={}",
+        path.display(),
+        total_batches,
+        total_rows
+    );
 
     Ok(())
 }
@@ -630,17 +655,19 @@ async fn load_service_file(
     }
 
     let mut stream = open_batch_stream(path).await?;
+    let mut total_rows = 0usize;
+    let mut total_batches = 0usize;
+
     while let Some(batch) = stream.next().await {
         let batch = batch?;
+        total_batches += 1;
 
         let mut row_literals = Vec::with_capacity(batch.num_rows());
         for row in 0..batch.num_rows() {
             let lit = match stem {
                 "personlig_assistans" => build_personlig_assistans_row(&batch, row)?,
                 "barn_unga" => build_barn_unga_row(&batch, row)?,
-                "boende_daglig_verksamhet" => {
-                    build_boende_daglig_verksamhet_row(&batch, row)?
-                }
+                "boende_daglig_verksamhet" => build_boende_daglig_verksamhet_row(&batch, row)?,
                 "ekonomiskt_bistand" => build_ekonomiskt_bistand_row(&batch, row)?,
                 "forsorjningsstod" => build_forsorjningsstod_row(&batch, row)?,
                 "hemtjanst" => build_hemtjanst_row(&batch, row)?,
@@ -649,13 +676,21 @@ async fn load_service_file(
             row_literals.push(lit);
         }
 
+        total_rows += row_literals.len();
+
         for chunk in row_literals.chunks(batch_size) {
             let query = build_service_query(label, chunk);
             graph_query_raw(conn, graph_name, &query).await?;
         }
-
-        println!("Loaded {} {} rows from {}", batch.num_rows(), stem, path.display());
     }
+
+    println!(
+        "Loaded file {}: label={}, batches={}, rows={}",
+        path.display(),
+        label,
+        total_batches,
+        total_rows
+    );
 
     Ok(())
 }
@@ -685,7 +720,10 @@ async fn main() -> Result<()> {
     }
 
     let files = discover_parquet_files(&root);
+    let unique: HashSet<_> = files.iter().collect();
+
     println!("Found {} parquet files under {}", files.len(), root.display());
+    println!("Unique paths: {}", unique.len());
     println!("Using redis/falkordb URL: {}", redis_url);
     println!("Graph name: {}", graph_name);
     println!("Batch size: {}", batch_size);
