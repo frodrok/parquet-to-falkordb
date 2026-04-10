@@ -1,0 +1,76 @@
+UMMARY /dev/shm/ubm-data/client172/1775849214347083/personlig_assistans.parquet: batches=1, rows=308
+  batch    3: rows=     952, cols=   8
+SUMMARY /dev/shm/ubm-data/client172/1775849214347083/creatures.parquet: batches=3, rows=3000
+
+=== FILE: /dev/shm/ubm-data/client129/1775849214326043/barn_unga.parquet ===
+Schema: Schema { fields: [Field { name: "id", data_type: Utf8 }, Field { name: "creature_id", data_type: Utf8 }, Field { name: "utforare_id", data_type: Utf8, nullable: true }, Field { name: "handlaggare_id", data_type: Utf8, nullable: true }, Field { name: "insatstyp", data_type: Utf8 }, Field { name: "lagrum", data_type: Utf8 }, Field { name: "placeringskommun", data_type: Utf8, nullable: true }, Field { name: "kostnad_per_dygn", data_type: Float64 }, Field { name: "startdatum", data_type: Date32 }, Field { name: "slutdatum", data_type: Date32, nullable: true }], metadata: {} }
+
+=== FILE: /dev/shm/ubm-data/client192/1775849214339235/formaner.parquet ===
+Schema: Schema { fields: [Field { name: "personnummer", data_type: Utf8 }, Field { name: "förmån_id", data_type: Utf8 }, Field { name: "startdatum", data_type: Date32 }, Field { name: "slutdatum", data_type: Date32, nullable: true }, Field { name: "totalbelopp", data_type: Float64 }], metadata: {} }
+
+=== FILE: /dev/shm/ubm-data/client129/1775849214326043/forsorjningsstod.parquet ===
+
+=== FILE: /dev/shm/ubm-data/client192/1775849214339235/creatures.parquet ===
+Schema: Schema { fields: [Field { name: "id", data_type: Binary }, Field { name: "name", data_type: Utf8 }, Field { name: "distrikt", data_type: Utf8 }, Field { name: "kommun_id", data_type: Utf8, nullable: true }, Field { name: "fk_person_id", data_type: Utf8, nullable: true }, Field { name: "af_arende_id", data_type: Utf8, nullable: true }, Field { name: "region_patient_id", data_type: Utf8, nullable: true }, Field { name: "skv_personnr_ref", data_type: Utf8, nullable: true }], metadata: {} }
+
+=== FILE: /dev/shm/ubm-data/client192/1775849214339235/personlig_assistans.parquet ===
+Schema: Schema { fields: [Field { name: "id", data_type: Utf8 }, Field { name: "creature_id", data_type: Utf8 }, Field { name: "utforare_id", data_type: Utf8, nullable: true }, Field { name: "handlaggare_id", data_type: Utf8, nullable: true }, Field { name: "lagrum", data_type: Utf8 }, Field { name: "beviljade_timmar_vecka", data_type: Float64 }, Field { name: "utforda_timmar_vecka", data_type: Float64 }, Field { name: "finansiar", data_type: Utf8 }, Field { name: "ivo_tillsynsnummer", data_type: Utf8, nullable: true }, Field { name: "beslutsdatum", data_type: Date32 }, Field { name: "giltigt_till", data_type: Date32, nullable: true }, Field { name: "status", data_type: Utf8 }], metadata: {} }
+
+=== FILE: /dev/shm/ubm-data/client129/1775849214326043/boende_daglig_verksamhet.parquet ===
+Schema: Schema { fields: [Field { name: "id", data_type: Utf8 }, Field { name: "creature_id", data_type: Utf8 }, Field { name: "utforare_id", data_type: Utf8, nullable: true }, Field { name: "handlaggare_id", data_type: Utf8, nullable: true }, Field { name: "typ", data_type: Utf8 }, Field { name: "lagrum", data_type: Utf8 }, Field { name: "besok_per_manad", data_type: Int32 }, Field { name: "beslutsdatum", data_type: Date32 }, Field { name: "giltighetsdatum", data_type: Date32, nullable: true }], metadata: {} }
+
+=== FILE: /dev/shm/ubm-data/client129/1775849214326043/ekonomiskt_bistand.parquet ===
+Schema: Schema { fields: [Field { name: "id", data_type: Utf8 }, Field { name: "creature_id", data_type: Utf8 }, Field { name: "handlaggare_id", data_type: Utf8, nullable: true }, Field { name: "andamal", data_type: Utf8 }, Field { name: "belopp_kr", data_type: Float64 }, Field { name: "period", data_type: Utf8 }, Field { name: "aterkrav", data_type: Boolean }, Field { name: "aterkravsbelopp", data_type: Float64, nullable: true }, Field { name: "utbetalningsdatum", data_type: Date32 }], metadata: {} }
+Schema: Schema { fields: [Field { name: "id", data_type: Utf8 }, Field { name: "creature_id", data_type: Utf8 }, Field { name: "handlaggare_id", data_type: Utf8, nullable: true }, Field { name: "belopp_kr", data_type: Float64 }, Field { name: "period", data_type: Utf8 }, Field { name: "antal_manader", data_type: Int32 }, Field { name: "aktivitetskrav_uppfyllt", data_type: Boolean }, Field { name: "kopplad_aktivitet", data_type: Utf8, nullable: true }], metadata: {} }
+
+=== FILE: /dev/shm/ubm-data/client129/1775849214326043/hemtjanst.parquet ===
+Schema: Schema { fields: [Field { name: "id", data_type: Utf8 }, Field { name: "creature_id", data_type: Utf8 }, Field { name: "utforare_id", data_type: Utf8, nullable: true }, Field { name: "handlaggare_id", data_type: Utf8, nullable: true }, Field { name: "driftform", data_type: Utf8 }, Field { name: "beviljade_timmar_manad", data_type: Float64 }, Field { name: "utforda_timmar_manad", data_type: Float64 }, Field { name: "insatstyper", data_type: Utf8 }, Field { name: "kostnad_kr", data_type: Float64 }, Field { name: "beslutsdatum", data_type: Date32 }, Field { name: "giltigt_till", data_type: Date32, nullable: true }], metadata: {} }
+  batch    1: rows=    1024, cols=   5
+  batch    2: rows=    1024, cols=   5
+  batch    3: rows=    1024, cols=   5
+  batch    4: rows=    1024, cols=   5
+  batch    5: rows=    1024, cols=   5
+  batch    1: rows=     215, cols=  10
+  batch    6: rows=    1024, cols=   5
+SUMMARY /dev/shm/ubm-data/client129/1775849214326043/barn_unga.parquet: batches=1, rows=215
+  batch    7: rows=    1024, cols=   5
+  batch    8: rows=     375, cols=   5
+SUMMARY /dev/shm/ubm-data/client192/1775849214339235/formaner.parquet: batches=8, rows=7543
+  batch    1: rows=     770, cols=   9
+  batch    1: rows=     280, cols=   9
+  batch    1: rows=     458, cols=   8
+SUMMARY /dev/shm/ubm-data/client129/1775849214326043/ekonomiskt_bistand.parquet: batches=1, rows=770
+SUMMARY /dev/shm/ubm-data/client129/1775849214326043/forsorjningsstod.parquet: batches=1, rows=458
+SUMMARY /dev/shm/ubm-data/client129/1775849214326043/boende_daglig_verksamhet.parquet: batches=1, rows=280
+  batch    1: rows=     342, cols=  12
+  batch    1: rows=    1024, cols=   8
+SUMMARY /dev/shm/ubm-data/client192/1775849214339235/personlig_assistans.parquet: batches=1, rows=342
+  batch    1: rows=     994, cols=  11
+  batch    2: rows=    1024, cols=   8
+SUMMARY /dev/shm/ubm-data/client129/1775849214326043/hemtjanst.parquet: batches=1, rows=994
+  batch    3: rows=     953, cols=   8
+SUMMARY /dev/shm/ubm-data/client192/1775849214339235/creatures.parquet: batches=3, rows=3001
+
+=== FILE: /dev/shm/ubm-data/client129/1775849214326043/personlig_assistans.parquet ===
+Schema: Schema { fields: [Field { name: "id", data_type: Utf8 }, Field { name: "creature_id", data_type: Utf8 }, Field { name: "utforare_id", data_type: Utf8, nullable: true }, Field { name: "handlaggare_id", data_type: Utf8, nullable: true }, Field { name: "lagrum", data_type: Utf8 }, Field { name: "beviljade_timmar_vecka", data_type: Float64 }, Field { name: "utforda_timmar_vecka", data_type: Float64 }, Field { name: "finansiar", data_type: Utf8 }, Field { name: "ivo_tillsynsnummer", data_type: Utf8, nullable: true }, Field { name: "beslutsdatum", data_type: Date32 }, Field { name: "giltigt_till", data_type: Date32, nullable: true }, Field { name: "status", data_type: Utf8 }], metadata: {} }
+
+=== FILE: /dev/shm/ubm-data/client129/1775849214326043/formaner.parquet ===
+Schema: Schema { fields: [Field { name: "personnummer", data_type: Utf8 }, Field { name: "förmån_id", data_type: Utf8 }, Field { name: "startdatum", data_type: Date32 }, Field { name: "slutdatum", data_type: Date32, nullable: true }, Field { name: "totalbelopp", data_type: Float64 }], metadata: {} }
+
+=== FILE: /dev/shm/ubm-data/client129/1775849214326043/creatures.parquet ===
+Schema: Schema { fields: [Field { name: "id", data_type: Binary }, Field { name: "name", data_type: Utf8 }, Field { name: "distrikt", data_type: Utf8 }, Field { name: "kommun_id", data_type: Utf8, nullable: true }, Field { name: "fk_person_id", data_type: Utf8, nullable: true }, Field { name: "af_arende_id", data_type: Utf8, nullable: true }, Field { name: "region_patient_id", data_type: Utf8, nullable: true }, Field { name: "skv_personnr_ref", data_type: Utf8, nullable: true }], metadata: {} }
+  batch    1: rows=    1024, cols=   5
+  batch    2: rows=    1024, cols=   5
+  batch    3: rows=    1024, cols=   5
+  batch    4: rows=    1024, cols=   5
+  batch    1: rows=     310, cols=  12
+  batch    5: rows=    1024, cols=   5
+SUMMARY /dev/shm/ubm-data/client129/1775849214326043/personlig_assistans.parquet: batches=1, rows=310
+  batch    6: rows=    1024, cols=   5
+  batch    7: rows=    1024, cols=   5
+  batch    8: rows=     404, cols=   5
+SUMMARY /dev/shm/ubm-data/client129/1775849214326043/formaner.parquet: batches=8, rows=7572
+  batch    1: rows=    1024, cols=   8
+  batch    2: rows=    1024, cols=   8
+  batch    3: rows=     952, cols=   8
+SUMMARY /dev/shm/ubm-data/client129/1775849214326043/creatures.parquet: batches=3, rows=3000
